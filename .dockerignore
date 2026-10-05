@@ -1,0 +1,6 @@
+data/
+.env
+.env.*
+*.bak
+qr.png
+.git/
