@@ -269,7 +269,7 @@ func (c *Client) parseHistoryMessage(chatJID types.JID, msg *waWeb.WebMessageInf
 			} else if message.GetLocationMessage() != nil || message.GetLiveLocationMessage() != nil {
 				text = "[Location]"
 			} else if message.GetReactionMessage() != nil || message.GetEncReactionMessage() != nil {
-				text, replyToID = extractReactionData(message)
+				text, replyToID = c.reactionData(context.Background(), parsedMsg)
 				if text == "" {
 					text = "[Reaction]"
 				}
@@ -395,7 +395,7 @@ func (c *Client) handleMessage(evt *events.Message) {
 		} else if evt.Message.GetLocationMessage() != nil || evt.Message.GetLiveLocationMessage() != nil {
 			text = "[Location]"
 		} else if evt.Message.GetReactionMessage() != nil || evt.Message.GetEncReactionMessage() != nil {
-			text, replyToID = extractReactionData(evt.Message)
+			text, replyToID = c.reactionData(ctx, evt)
 			if text == "" {
 				text = "[Reaction]"
 			}
@@ -1044,7 +1044,7 @@ func (c *Client) getMessageType(msg *waE2E.Message) string {
 
 // extractReactionData extracts the emoji text and target message ID from a ReactionMessage.
 // Returns the emoji string and the ID of the message being reacted to.
-// Note: EncReactionMessage is encrypted and doesn't expose the data directly.
+// EncReactionMessage is encrypted; see reactionData.
 func extractReactionData(msg *waE2E.Message) (emoji string, targetMessageID string) {
 	if msg == nil {
 		return "", ""
@@ -1061,8 +1061,23 @@ func extractReactionData(msg *waE2E.Message) (emoji string, targetMessageID stri
 		}
 	}
 
-	// EncReactionMessage is encrypted, we can't extract the data from it
-	// It will fall back to "[Reaction]" in the caller
-
 	return emoji, targetMessageID
+}
+
+// reactionData is extractReactionData plus decryption of EncReactionMessage, which WhatsApp
+// uses in community groups. whatsmeow keeps the message secret of every message it received,
+// so the reaction can be decrypted as long as the target message passed through this device.
+// If decryption fails, the target message ID is still known from the unencrypted key.
+func (c *Client) reactionData(ctx context.Context, evt *events.Message) (emoji string, targetMessageID string) {
+	enc := evt.Message.GetEncReactionMessage()
+	if enc == nil {
+		return extractReactionData(evt.Message)
+	}
+	targetMessageID = enc.GetTargetMessageKey().GetID()
+	reaction, err := c.wa.DecryptReaction(ctx, evt)
+	if err != nil {
+		c.log.Warnf("Failed to decrypt reaction %s from %s: %v", evt.Info.ID, evt.Info.Sender, err)
+		return "", targetMessageID
+	}
+	return reaction.GetText(), targetMessageID
 }
